@@ -58,6 +58,8 @@
   #btn-raz-annees { margin-top:8px; background:transparent; border:1.5px solid var(--jaune); border-radius:8px; padding:6px 12px; font-weight:700; color:#7A5510; }
   .aide-annees { margin:8px 0 0; font-size:.8rem; line-height:1.45; color:#5A6E75; }
   #btn-raz { background:var(--jaune); border:none; border-radius:8px; padding:8px 12px; font-weight:700; color:#3A2A08; width:100%; }
+  .case-couche { display:flex; align-items:center; gap:9px; font-size:.92rem; font-weight:600; padding:8px 2px 2px; cursor:pointer; }
+  .case-couche input { width:19px; height:19px; accent-color:#0B5394; flex:0 0 auto; cursor:pointer; }
 
   /* ---------- Liste des feux (années sélectionnées) ---------- */
   #bloc-liste { display:none; }
@@ -149,10 +151,10 @@
       <section>
         <h2>Filtres</h2>
         <div class="filtre">
-          <label>Années <output id="out-annees">toutes</output></label>
+          <label>Années <output id="out-annees">aucune</output></label>
           <div class="grille-annees" id="grille-annees"></div>
           <button id="btn-raz-annees" type="button">Réinitialiser</button>
-          <p class="aide-annees">Clique une ou plusieurs années pour ne voir que leurs feux ; le choix reste en place. Aucune année allumée = toutes les années.</p>
+          <p class="aide-annees">Clique une ou plusieurs années pour voir leurs feux ; le choix reste en place. Aucune année allumée = aucun feu affiché.</p>
         </div>
         <div class="filtre">
           <label>Superficie min. sur terres privées (ha)</label>
@@ -162,6 +164,7 @@
           <label>Peuplements brûlés min. (ha)</label>
           <div class="rangee"><input type="range" id="peup-min" min="0" step="1"><input type="number" id="peup-min-num" min="0" step="1"></div>
         </div>
+        <label class="case-couche"><input type="checkbox" id="case-territoire" checked> Terres privées (calque bleu)</label>
         <button id="btn-raz" type="button">Réinitialiser les filtres</button>
       </section>
       <section id="bloc-liste">
@@ -184,6 +187,7 @@
       </section>
       <section>
         <h2>Légende — par décennie</h2>
+        <div class="legende-item"><span class="pastille" style="background:rgba(46,134,214,.4);border:1.5px solid #0B5394"></span>Terres privées (calque bleu)</div>
         <div id="legende"></div>
         <p class="fiche-vide" style="margin-top:6px">Seules les parties des feux situées sur les terres privées sont dessinées.</p>
       </section>
@@ -258,12 +262,15 @@ const DECENNIES = [
 const couleurAnnee = (a) => (DECENNIES.find((d) => a >= d.min && a <= d.max) || DECENNIES[3]).couleur;
 
 // ---------- État ----------
-let donnees = null;          // FeatureCollection complète
-let carte = null, couche = null, coucheEvidence = null;
+let donnees = null;          // FeatureCollection complète (les feux)
+let territoire = null;       // FeatureCollection du calque « Terres privées »
+let carte = null, couche = null, coucheEvidence = null, coucheTerritoire = null;
+let fondActuel = 'plan';     // 'plan' (OSM) ou 'satellite' (Esri)
 let selectionId = null;
 const filtres = { supMin: 0, peupMin: 0 };
-// Années cliquables : ensemble des années allumées. VIDE = toutes les
-// années (filtre inactif, jamais de carte vide par ce seul fait).
+// Années cliquables : ensemble des années allumées. VIDE = AUCUN feu
+// (décision du propriétaire : « quand rien n'est coché, rien n'apparaît ») ;
+// c'est aussi l'état initial de l'outil.
 const anneesChoisies = new Set();
 let bornes = { anMin: 1994, anMax: 2025, supMax: 0, peupMax: 0 };
 
@@ -292,6 +299,18 @@ async function ouvrirAvecCle(b64) {
   const cle = await crypto.subtle.importKey('raw', deb64(b64), { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
   const clair = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: octets.slice(0, 12) }, cle, octets.slice(12));
   donnees = JSON.parse(new TextDecoder().decode(clair));
+  // Calque « Terres privées » : fichier compagnon chiffré avec la MÊME clé,
+  // chargé seulement après déverrouillage. Un échec ici ne bloque pas
+  // l'outil : le calque est simplement absent et sa case est désactivée.
+  territoire = null;
+  try {
+    const repT = await fetch('donnees/terres_privees.geojson.enc', { cache: 'no-store' });
+    if (repT.ok) {
+      const octetsT = new Uint8Array(await repT.arrayBuffer());
+      const clairT = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: octetsT.slice(0, 12) }, cle, octetsT.slice(12));
+      territoire = JSON.parse(new TextDecoder().decode(clairT));
+    }
+  } catch (e) { territoire = null; }
   try { localStorage.setItem(CLE_STOCKAGE, b64); } catch (e) {}
   demarrer();
 }
@@ -355,9 +374,38 @@ function demarrer() {
   bornes.peupMax = Math.ceil(Math.max(...donnees.features.map((f) => f.properties.sup_peupl_ha)));
 
   carte = L.map('carte').setView([48.55, -72.4], 8);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  // Choix du fond de carte (contrôle de couches, en haut de la carte) :
+  // « Plan » (OpenStreetMap) ou « Satellite » (imagerie Esri World Imagery).
+  const fondPlan = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 17, attribution: '© OpenStreetMap contributors',
-  }).addTo(carte);
+  });
+  const fondSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 17, attribution: '© Esri, Maxar, Earthstar Geographics',
+  });
+  fondPlan.addTo(carte);
+  L.control.layers({ Plan: fondPlan, Satellite: fondSatellite }, null, { collapsed: false }).addTo(carte);
+  carte.on('baselayerchange', (e) => {
+    fondActuel = e.name === 'Satellite' ? 'satellite' : 'plan';
+    appliquerStyleTerritoire();
+  });
+
+  // Calque « Terres privées » : teinte bleue semi-transparente (remplissage
+  // du masque privé, pas un simple contour), liseré bleu soutenu. Il est
+  // posé AU-DESSUS du fond mais SOUS les feux (ajouté avant la couche des
+  // feux), non interactif, insensible aux filtres. Sur le fond Satellite,
+  // la teinte est renforcée (opacité 0,30 contre 0,16) pour rester lisible
+  // sur l'imagerie.
+  if (territoire) {
+    coucheTerritoire = L.geoJSON(territoire, { interactive: false, style: styleTerritoire() });
+    if ($('case-territoire').checked) coucheTerritoire.addTo(carte);
+  } else {
+    $('case-territoire').disabled = true;
+  }
+  $('case-territoire').addEventListener('change', () => {
+    if (!coucheTerritoire) return;
+    if ($('case-territoire').checked) coucheTerritoire.addTo(carte);
+    else carte.removeLayer(coucheTerritoire);
+  });
 
   // Légende
   $('legende').innerHTML = DECENNIES.map((d) => {
@@ -411,6 +459,17 @@ function demarrer() {
   appliquerFiltres();
 }
 
+// ---------- Calque « Terres privées » (teinte bleue) ----------
+function styleTerritoire() {
+  return {
+    color: '#0B5394', weight: 1.6, opacity: 0.9,
+    fillColor: '#2E86D6', fillOpacity: fondActuel === 'satellite' ? 0.30 : 0.16,
+  };
+}
+function appliquerStyleTerritoire() {
+  if (coucheTerritoire) coucheTerritoire.setStyle(styleTerritoire());
+}
+
 // ---------- Années cliquables ----------
 function basculerAnnee(a, bouton) {
   if (anneesChoisies.has(a)) { anneesChoisies.delete(a); bouton.classList.remove('actif'); bouton.setAttribute('aria-pressed', 'false'); }
@@ -427,18 +486,19 @@ function eteindreAnnees() {
 
 function majSortieAnnees() {
   const n = anneesChoisies.size;
-  $('out-annees').textContent = n === 0 ? 'toutes' : (n + (n === 1 ? ' choisie' : ' choisies'));
+  $('out-annees').textContent = n === 0 ? 'aucune' : (n + (n === 1 ? ' choisie' : ' choisies'));
 }
 
 // Libellé des années pour le résumé des critères (compilation) :
-// « toutes » si aucune n'est allumée, sinon la liste triée croissante.
+// « aucune sélection » si aucune n'est allumée, sinon la liste triée.
 function libelleAnnees() {
-  if (!anneesChoisies.size) return 'toutes';
+  if (!anneesChoisies.size) return 'aucune sélection';
   return [...anneesChoisies].sort((x, y) => x - y).join(', ');
 }
 
 function passeFiltres(p) {
-  return (anneesChoisies.size === 0 || anneesChoisies.has(p.annee))
+  // Sélection d'années vide = AUCUN feu ne passe (décision du propriétaire).
+  return anneesChoisies.has(p.annee)
     && p.sup_privee_ha >= filtres.supMin && p.sup_peupl_ha >= filtres.peupMin;
 }
 
