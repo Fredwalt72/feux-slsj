@@ -50,6 +50,13 @@
   .filtre .rangee { display:flex; gap:8px; align-items:center; }
   .filtre input[type="range"] { flex:1 1 auto; min-width:0; accent-color:var(--petrole); }
   .filtre input[type="number"] { width:84px; padding:5px 6px; border:1.5px solid #B9CBD0; border-radius:6px; font-variant-numeric: tabular-nums; }
+  .grille-annees { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; }
+  .btn-annee { background:#fff; border:1.5px solid var(--petrole); color:var(--petrole); border-radius:8px; padding:6px 2px 5px; font-weight:700; font-size:.9rem; line-height:1.2; min-height:44px; }
+  .btn-annee .nb-feux { display:block; font-size:.66rem; font-weight:600; opacity:.72; font-variant-numeric:tabular-nums; }
+  .btn-annee.actif { background:var(--petrole); color:#fff; border-color:var(--petrole-fonce); }
+  .btn-annee.actif .nb-feux { opacity:.92; }
+  #btn-raz-annees { margin-top:8px; background:transparent; border:1.5px solid var(--jaune); border-radius:8px; padding:6px 12px; font-weight:700; color:#7A5510; }
+  .aide-annees { margin:8px 0 0; font-size:.8rem; line-height:1.45; color:#5A6E75; }
   #btn-raz { background:var(--jaune); border:none; border-radius:8px; padding:8px 12px; font-weight:700; color:#3A2A08; width:100%; }
   #btn-compilation { background:var(--petrole); border:none; border-radius:8px; padding:9px 12px; font-weight:700; color:#fff; width:100%; }
 
@@ -133,12 +140,10 @@
       <section>
         <h2>Filtres</h2>
         <div class="filtre">
-          <label>Année la plus ancienne <output id="out-an-min"></output></label>
-          <div class="rangee"><input type="range" id="an-min"></div>
-        </div>
-        <div class="filtre">
-          <label>Année la plus récente <output id="out-an-max"></output></label>
-          <div class="rangee"><input type="range" id="an-max"></div>
+          <label>Années <output id="out-annees">toutes</output></label>
+          <div class="grille-annees" id="grille-annees"></div>
+          <button id="btn-raz-annees" type="button">Réinitialiser</button>
+          <p class="aide-annees">Clique une ou plusieurs années pour ne voir que leurs feux ; le choix reste en place. Aucune année allumée = toutes les années.</p>
         </div>
         <div class="filtre">
           <label>Superficie min. sur terres privées (ha)</label>
@@ -242,7 +247,10 @@ const couleurAnnee = (a) => (DECENNIES.find((d) => a >= d.min && a <= d.max) || 
 let donnees = null;          // FeatureCollection complète
 let carte = null, couche = null;
 let selectionId = null;
-const filtres = { anMin: 1994, anMax: 2025, supMin: 0, peupMin: 0 };
+const filtres = { supMin: 0, peupMin: 0 };
+// Années cliquables : ensemble des années allumées. VIDE = toutes les
+// années (filtre inactif, jamais de carte vide par ce seul fait).
+const anneesChoisies = new Set();
 let bornes = { anMin: 1994, anMax: 2025, supMax: 0, peupMax: 0 };
 
 // ---------- Déverrouillage ----------
@@ -331,7 +339,6 @@ function demarrer() {
   bornes.anMin = Math.min(...ans); bornes.anMax = Math.max(...ans);
   bornes.supMax = Math.ceil(Math.max(...donnees.features.map((f) => f.properties.sup_privee_ha)));
   bornes.peupMax = Math.ceil(Math.max(...donnees.features.map((f) => f.properties.sup_peupl_ha)));
-  filtres.anMin = bornes.anMin; filtres.anMax = bornes.anMax;
 
   carte = L.map('carte').setView([48.55, -72.4], 8);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -344,40 +351,74 @@ function demarrer() {
     return `<div class="legende-item"><span class="pastille" style="background:${d.couleur}"></span>${lib}</div>`;
   }).join('');
 
-  // Bornes des contrôles
-  const anMin = $('an-min'), anMax = $('an-max');
-  anMin.min = anMax.min = bornes.anMin; anMin.max = anMax.max = bornes.anMax;
-  anMin.step = anMax.step = 1; anMin.value = bornes.anMin; anMax.value = bornes.anMax;
+  // Grille des années cliquables (une par année des données, dans l'ordre)
+  const comptesAnnees = {};
+  donnees.features.forEach((f) => { comptesAnnees[f.properties.annee] = (comptesAnnees[f.properties.annee] || 0) + 1; });
+  const grille = $('grille-annees');
+  grille.innerHTML = '';
+  for (let a = bornes.anMin; a <= bornes.anMax; a++) {
+    const n = comptesAnnees[a] || 0;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn-annee';
+    b.dataset.annee = a;
+    b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = a + '<span class="nb-feux">' + n + (n === 1 ? ' feu' : ' feux') + '</span>';
+    b.addEventListener('click', () => basculerAnnee(a, b));
+    grille.appendChild(b);
+  }
+  majSortieAnnees();
+  $('btn-raz-annees').addEventListener('click', () => { eteindreAnnees(); appliquerFiltres(); });
+
+  // Bornes des contrôles superficie / peuplements
   const supMin = $('sup-min'), peupMin = $('peup-min');
   supMin.max = bornes.supMax; peupMin.max = bornes.peupMax;
   supMin.value = 0; peupMin.value = 0;
   $('sup-min-num').max = bornes.supMax; $('peup-min-num').max = bornes.peupMax;
   $('sup-min-num').value = 0; $('peup-min-num').value = 0;
-  majEtiqueAnnees();
-
-  anMin.addEventListener('input', () => { filtres.anMin = Math.min(+anMin.value, filtres.anMax); anMin.value = filtres.anMin; majEtiqueAnnees(); appliquerFiltres(); });
-  anMax.addEventListener('input', () => { filtres.anMax = Math.max(+anMax.value, filtres.anMin); anMax.value = filtres.anMax; majEtiqueAnnees(); appliquerFiltres(); });
   supMin.addEventListener('input', () => { filtres.supMin = +supMin.value; $('sup-min-num').value = filtres.supMin; appliquerFiltres(); });
   $('sup-min-num').addEventListener('change', () => { filtres.supMin = Math.max(0, +$('sup-min-num').value || 0); supMin.value = Math.min(filtres.supMin, bornes.supMax); appliquerFiltres(); });
   peupMin.addEventListener('input', () => { filtres.peupMin = +peupMin.value; $('peup-min-num').value = filtres.peupMin; appliquerFiltres(); });
   $('peup-min-num').addEventListener('change', () => { filtres.peupMin = Math.max(0, +$('peup-min-num').value || 0); peupMin.value = Math.min(filtres.peupMin, bornes.peupMax); appliquerFiltres(); });
   $('btn-raz').addEventListener('click', () => {
-    filtres.anMin = bornes.anMin; filtres.anMax = bornes.anMax; filtres.supMin = 0; filtres.peupMin = 0;
-    anMin.value = bornes.anMin; anMax.value = bornes.anMax; supMin.value = 0; peupMin.value = 0;
+    filtres.supMin = 0; filtres.peupMin = 0;
+    eteindreAnnees();
+    supMin.value = 0; peupMin.value = 0;
     $('sup-min-num').value = 0; $('peup-min-num').value = 0;
-    majEtiqueAnnees(); appliquerFiltres();
+    appliquerFiltres();
   });
 
   appliquerFiltres();
 }
 
-function majEtiqueAnnees() {
-  $('out-an-min').textContent = filtres.anMin;
-  $('out-an-max').textContent = filtres.anMax;
+// ---------- Années cliquables ----------
+function basculerAnnee(a, bouton) {
+  if (anneesChoisies.has(a)) { anneesChoisies.delete(a); bouton.classList.remove('actif'); bouton.setAttribute('aria-pressed', 'false'); }
+  else { anneesChoisies.add(a); bouton.classList.add('actif'); bouton.setAttribute('aria-pressed', 'true'); }
+  majSortieAnnees();
+  appliquerFiltres();
+}
+
+function eteindreAnnees() {
+  anneesChoisies.clear();
+  document.querySelectorAll('.btn-annee.actif').forEach((b) => { b.classList.remove('actif'); b.setAttribute('aria-pressed', 'false'); });
+  majSortieAnnees();
+}
+
+function majSortieAnnees() {
+  const n = anneesChoisies.size;
+  $('out-annees').textContent = n === 0 ? 'toutes' : (n + (n === 1 ? ' choisie' : ' choisies'));
+}
+
+// Libellé des années pour le résumé des critères (compilation) :
+// « toutes » si aucune n'est allumée, sinon la liste triée croissante.
+function libelleAnnees() {
+  if (!anneesChoisies.size) return 'toutes';
+  return [...anneesChoisies].sort((x, y) => x - y).join(', ');
 }
 
 function passeFiltres(p) {
-  return p.annee >= filtres.anMin && p.annee <= filtres.anMax
+  return (anneesChoisies.size === 0 || anneesChoisies.has(p.annee))
     && p.sup_privee_ha >= filtres.supMin && p.sup_peupl_ha >= filtres.peupMin;
 }
 
@@ -429,7 +470,7 @@ function ouvrirCompilation() {
   $('compil-production').textContent = 'Compilation produite le '
     + maintenant.toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', year: 'numeric' })
     + ' à ' + maintenant.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) + '.';
-  $('compil-criteres').innerHTML = '<b>Critères appliqués</b> — Années : de ' + filtres.anMin + ' à ' + filtres.anMax
+  $('compil-criteres').innerHTML = '<b>Critères appliqués</b> — Années : ' + libelleAnnees()
     + ' · Superficie min. sur terres privées : ' + fmtNombre(filtres.supMin, 0) + ' ha'
     + ' · Peuplements brûlés min. : ' + fmtNombre(filtres.peupMin, 0) + ' ha'
     + ' · Feux retenus : <b>' + fmtNombre(liste.length, 0) + '</b>';
