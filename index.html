@@ -58,6 +58,15 @@
   #btn-raz-annees { margin-top:8px; background:transparent; border:1.5px solid var(--jaune); border-radius:8px; padding:6px 12px; font-weight:700; color:#7A5510; }
   .aide-annees { margin:8px 0 0; font-size:.8rem; line-height:1.45; color:#5A6E75; }
   #btn-raz { background:var(--jaune); border:none; border-radius:8px; padding:8px 12px; font-weight:700; color:#3A2A08; width:100%; }
+
+  /* ---------- Liste des feux (années sélectionnées) ---------- */
+  #bloc-liste { display:none; }
+  #liste-feux { max-height:48vh; overflow-y:auto; padding-right:2px; }
+  .ligne-feu { display:block; width:100%; text-align:left; background:#fff; border:1.5px solid #B9CBD0; border-radius:8px; padding:8px 10px; margin-bottom:6px; min-height:44px; }
+  .ligne-feu .l1 { display:block; font-weight:700; color:var(--petrole-fonce); font-size:.95rem; }
+  .ligne-feu .l2 { display:block; font-size:.85rem; color:#47606A; margin-top:2px; font-variant-numeric:tabular-nums; }
+  .ligne-feu.choisi { border-color:var(--jaune); background:#FDF3DF; box-shadow:inset 0 0 0 2px var(--jaune); }
+  .liste-vide { color:#5A6E75; font-size:.92rem; margin:0; }
   #btn-compilation { background:var(--petrole); border:none; border-radius:8px; padding:9px 12px; font-weight:700; color:#fff; width:100%; }
 
   /* ---------- Compilation imprimable ---------- */
@@ -155,6 +164,11 @@
         </div>
         <button id="btn-raz" type="button">Réinitialiser les filtres</button>
       </section>
+      <section id="bloc-liste">
+        <h2 id="titre-liste">Liste des feux</h2>
+        <div id="liste-feux"></div>
+        <p class="fiche-vide" style="margin-top:6px">Touche un feu de la liste : la carte le cadre, le met en évidence et ouvre sa fiche.</p>
+      </section>
       <section>
         <h2>Totaux — feux affichés</h2>
         <div class="totaux">
@@ -245,7 +259,7 @@ const couleurAnnee = (a) => (DECENNIES.find((d) => a >= d.min && a <= d.max) || 
 
 // ---------- État ----------
 let donnees = null;          // FeatureCollection complète
-let carte = null, couche = null;
+let carte = null, couche = null, coucheEvidence = null;
 let selectionId = null;
 const filtres = { supMin: 0, peupMin: 0 };
 // Années cliquables : ensemble des années allumées. VIDE = toutes les
@@ -388,6 +402,12 @@ function demarrer() {
     appliquerFiltres();
   });
 
+  // Liste des feux : un seul écouteur, par délégation sur les lignes.
+  $('liste-feux').addEventListener('click', (ev) => {
+    const b = ev.target.closest('.ligne-feu');
+    if (b) choisirFeu(b.dataset.id, true);
+  });
+
   appliquerFiltres();
 }
 
@@ -431,7 +451,7 @@ function appliquerFiltres() {
       weight: f.properties.id === selectionId ? 3 : 1,
       fillColor: couleurAnnee(f.properties.annee), fillOpacity: 0.62,
     }),
-    onEachFeature: (f, calque) => calque.on('click', () => { selectionId = f.properties.id; afficherFiche(f.properties); appliquerStylesSelection(); }),
+    onEachFeature: (f, calque) => calque.on('click', () => choisirFeu(f.properties.id, false)),
   }).addTo(carte);
   const totSup = visibles.reduce((s, f) => s + f.properties.sup_privee_ha, 0);
   const totPeup = visibles.reduce((s, f) => s + f.properties.sup_peupl_ha, 0);
@@ -442,6 +462,72 @@ function appliquerFiltres() {
     selectionId = null;
     $('fiche').innerHTML = '<p class="fiche-vide">👆 Zoome sur un secteur, puis touche un feu coloré : tu verras son année, sa superficie sur les terres privées et les peuplements brûlés.</p>';
   }
+  majListe(visibles);
+  majEvidence();
+}
+
+// ---------- Liste des feux de la sélection ----------
+// Visible seulement quand au moins une année est allumée ; le contenu est
+// l'ensemble ACTUELLEMENT FILTRÉ (tous les filtres), trié comme la
+// compilation : année croissante, puis superficie privée décroissante.
+function majListe(visibles) {
+  const bloc = $('bloc-liste');
+  if (anneesChoisies.size === 0) { bloc.style.display = 'none'; return; }
+  const tries = [...visibles].sort((a, b) => (a.properties.annee - b.properties.annee)
+    || (b.properties.sup_privee_ha - a.properties.sup_privee_ha));
+  $('titre-liste').textContent = 'Liste des feux (' + fmtNombre(tries.length, 0) + ')';
+  const cont = $('liste-feux');
+  cont.innerHTML = tries.length ? tries.map((f) => {
+    const p = f.properties;
+    const titre = p.nofeu ? 'Feu nº ' + p.nofeu : 'Nº de feu —';
+    return '<button type="button" class="ligne-feu' + (p.id === selectionId ? ' choisi' : '') + '" data-id="' + p.id + '">'
+      + '<span class="l1">' + p.annee + ' · ' + titre + '</span>'
+      + '<span class="l2">Privé : ' + fmtNombre(p.sup_privee_ha, 1) + ' ha · Peuplements : ' + fmtNombre(p.sup_peupl_ha, 1) + ' ha</span></button>';
+  }).join('') : '<p class="liste-vide">Aucun feu ne correspond aux filtres en vigueur.</p>';
+  bloc.style.display = 'block';
+}
+
+// Marque (ou démarque) la ligne du feu choisi, sans reconstruire la liste.
+function majMarqueListe() {
+  document.querySelectorAll('.ligne-feu').forEach((el) => {
+    el.classList.toggle('choisi', el.dataset.id === selectionId);
+  });
+}
+
+// ---------- Choix d'un feu et mise en évidence ----------
+// Chemin unique pour le clic sur la carte (aller=false) et le clic sur une
+// ligne de la liste (aller=true : la carte cadre le feu, et sur mobile la
+// page défile jusqu'à la carte pour qu'il soit visible sans manipulation).
+function choisirFeu(id, aller) {
+  const f = donnees.features.find((x) => x.properties.id === id);
+  if (!f) return;
+  selectionId = id;
+  afficherFiche(f.properties);
+  appliquerStylesSelection();
+  majEvidence();
+  majMarqueListe();
+  if (aller) {
+    carte.fitBounds(L.geoJSON(f).getBounds(), { padding: [28, 28], maxZoom: 14 });
+    if (window.matchMedia('(max-width: 820px)').matches) {
+      document.getElementById('carte').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+}
+
+// Évidence du feu choisi : contour épais blanc doublé de jaune, par-dessus
+// la couche des feux. Elle persiste jusqu'à un autre choix ; si un
+// changement de filtres fait sortir le feu de l'ensemble affiché,
+// appliquerFiltres réinitialise la sélection et l'évidence est retirée ici.
+function majEvidence() {
+  if (coucheEvidence) { carte.removeLayer(coucheEvidence); coucheEvidence = null; }
+  if (!selectionId) return;
+  const f = donnees.features.find((x) => x.properties.id === selectionId);
+  if (!f || !passeFiltres(f.properties)) return;
+  coucheEvidence = L.layerGroup([
+    L.geoJSON(f, { style: { color: '#FFFFFF', weight: 9, opacity: 1, fillOpacity: 0 } }),
+    L.geoJSON(f, { style: { color: '#E8A33D', weight: 5, opacity: 1, fillOpacity: 0 } }),
+  ]).addTo(carte);
+  coucheEvidence.eachLayer((l) => l.bringToFront());
 }
 
 function appliquerStylesSelection() {
