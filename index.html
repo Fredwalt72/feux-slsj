@@ -111,6 +111,16 @@
   .pastille-point { width:14px; height:14px; border-radius:50%; background:#E07B39; border:2px solid #fff; box-shadow:0 0 0 1.5px rgba(0,0,0,.4); flex:0 0 auto; margin:0 2px; }
   .ligne-feu.point { border-style:dashed; }
   #fiche .mention-contour { margin-top:10px; padding:9px 11px; border-radius:8px; background:#FDF3DF; border:1.5px solid var(--jaune); font-weight:700; font-size:.93rem; }
+
+  /* ---------- Phase 2 : peuplements par époque ---------- */
+  #fiche .bloc-epoque { margin-top:12px; border-top:1.5px solid #C9DDE2; padding-top:8px; }
+  #fiche .bloc-epoque h3 { margin:0 0 6px; font-size:.92rem; color:var(--petrole-fonce); }
+  .table-especes { width:100%; border-collapse:collapse; font-size:.9rem; }
+  .table-especes th, .table-especes td { padding:3px 4px; border-bottom:1px solid #E3E9EB; text-align:left; }
+  .table-especes td.num, .table-especes th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .note-epoque { font-size:.8rem; color:#5A6E75; line-height:1.45; margin:6px 0 0; }
+  #compil-epoques h2 { font-size:1.12rem; color:var(--petrole); margin:24px 0 8px; }
+  #compil-epoques h3 { font-size:1rem; color:var(--petrole-fonce); margin:18px 0 6px; }
   .compil-table tr.ligne-point td { font-style:italic; }
   .note-source { font-size:.82rem; line-height:1.5; color:#47606A; background:#FAF7EF; border:1px solid #E6DCC2; border-radius:10px; padding:10px 12px; }
   @media (max-width: 820px) {
@@ -233,6 +243,7 @@
       <tfoot id="compil-pied"></tfoot>
     </table>
   </div>
+  <div id="compil-epoques"></div>
   <p class="note-source" id="compil-note"></p>
   <div class="compil-actions non-imprimable" style="margin-top:16px">
     <button id="btn-retour-carte-bas" type="button">← Retour à la carte</button>
@@ -272,6 +283,7 @@ const couleurAnnee = (a) => (DECENNIES.find((d) => a >= d.min && a <= d.max) || 
 // ---------- État ----------
 let donnees = null;          // FeatureCollection complète (les feux AVEC contour)
 let pointsDonnees = null;    // FeatureCollection des feux SANS contour (points SOPFEU)
+let epoquesDonnees = null;   // Phase 2 : peuplements par époque (précalculs)
 let territoire = null;       // FeatureCollection du calque « Terres privées »
 let carte = null, couche = null, couchePoints = null, coucheEvidence = null, coucheTerritoire = null;
 let fondActuel = 'plan';     // 'plan' (OSM) ou 'satellite' (Esri)
@@ -332,6 +344,20 @@ async function ouvrirAvecCle(b64) {
       pointsDonnees = JSON.parse(new TextDecoder().decode(clairP));
     }
   } catch (e) { pointsDonnees = null; }
+  // Phase 2 — peuplements par époque : fichier compagnon chiffré avec
+  // la MÊME clé (répartition par espèce des peuplements brûlés selon la
+  // carte de l'époque de chaque feu ; peuplement du point d'origine
+  // pour les feux sans contour). Un échec ne bloque pas l'outil : les
+  // fiches affichent simplement leurs informations habituelles.
+  epoquesDonnees = null;
+  try {
+    const repE = await fetch('donnees/epoques.json.enc', { cache: 'no-store' });
+    if (repE.ok) {
+      const octetsE = new Uint8Array(await repE.arrayBuffer());
+      const clairE = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: octetsE.slice(0, 12) }, cle, octetsE.slice(12));
+      epoquesDonnees = JSON.parse(new TextDecoder().decode(clairE));
+    }
+  } catch (e) { epoquesDonnees = null; }
   try { localStorage.setItem(CLE_STOCKAGE, b64); } catch (e) {}
   demarrer();
 }
@@ -767,6 +793,7 @@ function ouvrirCompilation() {
     + 'Les lignes marquées 📍 sont des feux sans contour fourni par la SOPFEU : leur point d\u2019origine est situé sur les terres privées ; '
     + 'la superficie indiquée est la superficie déclarée du feu entier (toutes tenures), qui n\u2019entre ni dans les totaux des superficies sur terres privées, ni dans ceux des peuplements brûlés. '
     + 'Les valeurs inconnues sont affichées « — ». Superficies calculées sur les terres privées seulement (la partie publique de chaque feu est exclue).';
+  construireSectionEpoques(evs, pts);
   $('app').style.display = 'none';
   $('compilation').style.display = 'block';
   window.scrollTo(0, 0);
@@ -783,6 +810,121 @@ $('btn-imprimer').addEventListener('click', () => window.print());
 $('btn-retour-carte').addEventListener('click', fermerCompilation);
 $('btn-retour-carte-bas').addEventListener('click', fermerCompilation);
 
+// ---------- Phase 2 : peuplements par époque ----------
+// Libellés d'affichage des classes de la carte écoforestière (domaines
+// officiels du MRNF) : hauteur (mètres des tiges codominantes),
+// densité (couvert), âge (classes simples et biétagées, jeunes et
+// vieilles structures inéquiennes/régulières).
+const HAUTEURS = { '1': '21,5 m et plus', '2': '16,5 à 21,4 m', '3': '11,5 à 16,4 m', '4': '6,5 à 11,4 m', '5': '3,5 à 6,4 m', '6': '1,5 à 3,4 m', '7': '0,5 à 1,4 m' };
+const DENSITES = { 'A': 'A (80 % et plus de couvert)', 'B': 'B (60 à 79 % de couvert)', 'C': 'C (40 à 59 % de couvert)', 'D': 'D (25 à 39 % de couvert)', 'H': 'H (coefficient de distribution de 60 % et plus)', 'I': 'I (coefficient de distribution de moins de 60 %)' };
+const AGES_SPECIAUX = { JIN: 'jeune inéquienne', JIR: 'jeune régulière', VIN: 'vieille inéquienne', VIR: 'vieille régulière' };
+function libelleAge(code) {
+  if (!code) return null;
+  const c = String(code).trim().toUpperCase();
+  if (AGES_SPECIAUX[c]) return AGES_SPECIAUX[c];
+  if (!/^\d+$/.test(c)) return c;
+  const classes = ['120', '10', '30', '50', '70', '90'];
+  const parts = [];
+  let s = c;
+  while (s.length) {
+    const cl = classes.find((x) => s.startsWith(x));
+    if (!cl) return c; // code non décomposable : affiché tel quel
+    parts.push(cl);
+    s = s.slice(cl.length);
+  }
+  if (parts.length === 1) return parts[0] + ' ans';
+  return parts.map((x) => x + ' ans').join(' et ') + ' (biétagé)';
+}
+
+// Bloc « Peuplements brûlés » d'une fiche d'événement : répartition de
+// la superficie des peuplements brûlés par essence dominante, selon la
+// carte écoforestière de l'époque du feu. Les lignes somment (aux
+// arrondis près) à la superficie peuplements de la fiche.
+function blocEpoquesEvenement(p) {
+  if (!epoquesDonnees || !epoquesDonnees.evenements) return '';
+  const e = epoquesDonnees.evenements[p.id];
+  if (!e || !e.especes || !e.especes.length) return '';
+  const couche = epoquesDonnees.meta.couches[e.c];
+  const titre = 'Peuplements brûlés — ' + couche.nom + (e.photo ? ' (photo ~' + e.photo + ')' : '');
+  const lignes = e.especes.map(([lib, ha]) => {
+    const pct = p.sup_peupl_ha > 0 ? (ha / p.sup_peupl_ha * 100) : 0;
+    return '<tr><td>' + lib + '</td><td class="num">' + fmtNombre(ha, 1) + ' ha</td><td class="num">' + fmtNombre(pct, 1) + ' %</td></tr>';
+  }).join('');
+  return '<div class="bloc-epoque"><h3>' + titre + '</h3>'
+    + '<table class="table-especes">' + lignes + '</table>'
+    + '<p class="note-epoque">Répartition de la superficie des peuplements brûlés (' + fmtHa(p.sup_peupl_ha) + ') selon les peuplements cartographiés à l\u2019époque du feu.</p></div>';
+}
+
+// Bloc « Peuplement du point d'origine » d'une fiche de feu POINT : le
+// peuplement de la carte de l'époque qui contient le point d'origine.
+// Sa superficie est celle du PEUPLEMENT entier — jamais présentée
+// comme une superficie brûlée (le feu n'a pas de contour).
+function blocEpoquesPoint(p) {
+  if (!epoquesDonnees || !epoquesDonnees.points) return '';
+  const e = epoquesDonnees.points[p.id];
+  if (!e) return '';
+  const couche = epoquesDonnees.meta.couches[e.c];
+  const titre = 'Peuplement du point d\u2019origine — ' + couche.nom + (e.photo ? ' (photo ~' + e.photo + ')' : '');
+  if (!e.p) {
+    return '<div class="bloc-epoque"><h3>' + titre + '</h3>'
+      + '<p style="font-size:.92rem;margin:0">Point situé hors d\u2019un peuplement cartographié (carte de l\u2019époque).</p></div>';
+  }
+  const lignesP = [['Essence dominante', e.p.g]];
+  if (e.p.ess) lignesP.push(['Groupement d\u2019essences', e.p.ess]);
+  const age = libelleAge(e.p.age);
+  if (age) lignesP.push(['Âge', age]);
+  if (e.p.dens) lignesP.push(['Densité', DENSITES[e.p.dens] || e.p.dens]);
+  if (e.p.haut && HAUTEURS[e.p.haut]) lignesP.push(['Hauteur', 'classe ' + e.p.haut + ' (' + HAUTEURS[e.p.haut] + ')']);
+  lignesP.push(['Superficie du peuplement', fmtHa(e.p.sup)]);
+  return '<div class="bloc-epoque"><h3>' + titre + '</h3><dl>'
+    + lignesP.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>'
+    + '<p class="note-epoque">Le peuplement où le feu a pris naissance, tel que cartographié à l\u2019époque. Sa superficie est celle du peuplement entier — pas celle du feu, inconnue sans contour.</p></div>';
+}
+
+// Section « Peuplements brûlés par année » de la compilation : pour
+// chaque année de l'ensemble filtré, la répartition par essence des
+// peuplements brûlés des feux AVEC contour (agrégée depuis les mêmes
+// précalculs que les fiches), puis — libellé séparément — les feux
+// sans contour de l'année et leurs peuplements d'origine.
+function construireSectionEpoques(evs, pts) {
+  const cont = $('compil-epoques');
+  if (!epoquesDonnees) { cont.innerHTML = ''; return; }
+  const annees = [...new Set([...evs.map((f) => f.properties.annee),
+                               ...pts.map((f) => f.properties.annee)])].sort((a, b) => a - b);
+  if (!annees.length) { cont.innerHTML = ''; return; }
+  let html = '<h2>Peuplements brûlés par année</h2>'
+    + '<p class="note-source" style="margin:0 0 6px">Répartition par essence dominante selon la carte écoforestière de l\u2019époque de chaque feu '
+    + '(3e inventaire pour les feux jusqu\u2019en ' + epoquesDonnees.meta.coupures.c3_max
+    + ', 4e inventaire de ' + (epoquesDonnees.meta.coupures.c3_max + 1) + ' à ' + epoquesDonnees.meta.coupures.c4_max
+    + ', carte actuelle ensuite), pour les feux avec contour de la liste ci-dessus.</p>';
+  for (const a of annees) {
+    const evA = evs.filter((f) => f.properties.annee === a);
+    const ptA = pts.filter((f) => f.properties.annee === a);
+    html += '<h3>' + a + '</h3>';
+    if (evA.length) {
+      const agg = {};
+      evA.forEach((f) => {
+        const e = epoquesDonnees.evenements[f.properties.id];
+        if (e) e.especes.forEach(([lib, ha]) => { agg[lib] = (agg[lib] || 0) + ha; });
+      });
+      const lignes = Object.entries(agg).sort((x, y) => y[1] - x[1]);
+      const tot = evA.reduce((s, f) => s + f.properties.sup_peupl_ha, 0);
+      html += '<div class="compil-table-conteneur"><table class="compil-table"><thead><tr><th>Essence dominante (carte de l\u2019époque)</th><th class="num">Peuplements brûlés (ha)</th></tr></thead><tbody>'
+        + lignes.map(([lib, ha]) => '<tr><td>' + lib + '</td><td class="num">' + fmtNombre(ha, 1) + '</td></tr>').join('')
+        + '</tbody><tfoot><tr><td>Total — ' + fmtNombre(evA.length, 0) + (evA.length === 1 ? ' feu' : ' feux') + ' avec contour</td><td class="num">' + fmtNombre(tot, 1) + '</td></tr></tfoot></table></div>';
+    }
+    if (ptA.length) {
+      const avec = ptA.filter((f) => { const e = epoquesDonnees.points[f.properties.id]; return e && e.p; });
+      const supP = avec.reduce((s, f) => s + epoquesDonnees.points[f.properties.id].p.sup, 0);
+      html += '<p style="font-size:.92rem;line-height:1.5;margin:8px 0 0">Feux sans contour en ' + a + ' : ' + fmtNombre(ptA.length, 0) + (ptA.length === 1 ? ' feu' : ' feux')
+        + ' — peuplement d\u2019origine identifié pour ' + fmtNombre(avec.length, 0) + ' d\u2019entre eux'
+        + (avec.length ? ' (superficie totale de ces peuplements : ' + fmtNombre(supP, 1) + ' ha — superficie des peuplements où les feux ont pris naissance, <b>non</b> des superficies brûlées)' : '')
+        + '.</p>';
+    }
+  }
+  cont.innerHTML = html;
+}
+
 function afficherFiche(p) {
   const lignes = [
     ['Année', p.annee],
@@ -797,7 +939,8 @@ function afficherFiche(p) {
   if (dateFin) lignes.push(['Date de fin (extinction)', dateFin]);
   if (p.nofeu) lignes.push(['Feu SOPFEU nº', p.nofeu]);
   $('fiche').innerHTML = `<div class="annee">Feu de ${p.annee}</div><dl>` +
-    lignes.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>';
+    lignes.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>'
+    + blocEpoquesEvenement(p);
 }
 
 // Fiche d'un feu POINT (sans contour) : les seules données connues sont
@@ -818,7 +961,8 @@ function afficherFichePoint(p) {
   lignes.push(['Superficie déclarée', (p.sup_declaree_ha != null ? fmtHa(p.sup_declaree_ha) : '—') + ' (feu entier)']);
   $('fiche').innerHTML = `<div class="annee">Feu de ${p.annee} 📍</div><dl>` +
     lignes.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>'
-    + '<p class="mention-contour">Aucun contour fourni par la SOPFEU</p>';
+    + '<p class="mention-contour">Aucun contour fourni par la SOPFEU</p>'
+    + blocEpoquesPoint(p);
 }
 </script>
 </body>
