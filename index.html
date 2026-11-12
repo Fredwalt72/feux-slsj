@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feux de forêt — Terres privées · Saguenay–Lac-Saint-Jean</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --petrole:#0A5C6E; --petrole-fonce:#07424F; --jaune:#E8A33D; --fond:#F4F1EA; --texte:#1E2A2E; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--texte); background:var(--fond); }
+  button { font: inherit; cursor: pointer; }
+  input { font: inherit; }
+
+  /* ---------- Écran de verrouillage ---------- */
+  #verrou { min-height: 100vh; display:flex; align-items:center; justify-content:center; padding:16px;
+            background: linear-gradient(160deg, var(--petrole) 0%, var(--petrole-fonce) 100%); }
+  .carte-verrou { background:#fff; border-radius:14px; max-width:430px; width:100%; padding:28px 24px; box-shadow:0 12px 40px rgba(0,0,0,.35); }
+  .carte-verrou h1 { margin:0 0 4px; font-size:1.45rem; color:var(--petrole); }
+  .carte-verrou .sous-titre { margin:0 0 18px; color:#47606A; font-size:.95rem; }
+  .carte-verrou label { display:block; font-weight:600; margin-bottom:6px; }
+  .carte-verrou input[type="text"] { width:100%; padding:12px; border:2px solid #B9CBD0; border-radius:8px; font-size:1.05rem; letter-spacing:.03em; }
+  .carte-verrou input[type="text"]:focus { outline:none; border-color:var(--petrole); }
+  .carte-verrou button { width:100%; margin-top:14px; padding:12px; border:none; border-radius:8px; background:var(--petrole); color:#fff; font-weight:700; font-size:1.05rem; }
+  .carte-verrou button:disabled { opacity:.55; cursor:wait; }
+  #err-code { display:none; margin:12px 0 0; padding:10px 12px; border-radius:8px; background:#FDECEA; color:#8E2F38; font-size:.92rem; }
+  #msg-verrou { margin:12px 0 0; color:#47606A; font-size:.92rem; min-height:1.1em; }
+  .avertissement { margin:18px 0 0; padding:11px 12px; border-radius:8px; background:#FDF3DF; border:1px solid var(--jaune); font-size:.88rem; line-height:1.45; }
+
+  /* ---------- Application ---------- */
+  #app { display:none; }
+  .barre { background:var(--petrole); color:#fff; padding:10px 14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .barre h1 { font-size:1.12rem; margin:0; flex:1 1 auto; }
+  .barre .badge { background:var(--jaune); color:#3A2A08; border-radius:999px; padding:2px 10px; font-size:.78rem; font-weight:700; white-space:nowrap; }
+  #btn-verrouiller { background:transparent; color:#fff; border:1.5px solid #fff; border-radius:8px; padding:6px 12px; font-weight:600; white-space:nowrap; }
+  .disposition { display:flex; align-items:stretch; }
+  #carte { flex:1 1 auto; height: calc(100vh - 57px); min-height:380px; }
+  .panneau { flex:0 0 330px; max-width:330px; height: calc(100vh - 57px); overflow-y:auto; background:#fff; border-left:1px solid #D8DEE0; padding:12px 14px 20px; }
+  .panneau section { margin-bottom:18px; }
+  .panneau h2 { font-size:.98rem; color:var(--petrole); margin:0 0 8px; border-bottom:2px solid var(--jaune); padding-bottom:4px; }
+  .panneau h3 { font-size:.9rem; margin:12px 0 6px; color:var(--petrole-fonce); }
+  .fiche-vide { color:#5A6E75; font-size:.92rem; line-height:1.5; }
+  #fiche dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:.95rem; }
+  #fiche dt { font-weight:600; color:#47606A; }
+  #fiche dd { margin:0; text-align:right; font-variant-numeric: tabular-nums; }
+  #fiche .annee { font-size:1.25rem; font-weight:800; color:var(--petrole); margin-bottom:6px; }
+  .filtre { margin-bottom:14px; }
+  .filtre label { display:flex; justify-content:space-between; font-size:.9rem; font-weight:600; margin-bottom:4px; }
+  .filtre label output { font-variant-numeric: tabular-nums; color:var(--petrole); }
+  .filtre .rangee { display:flex; gap:8px; align-items:center; }
+  .filtre input[type="range"] { flex:1 1 auto; min-width:0; accent-color:var(--petrole); }
+  .filtre input[type="number"] { width:84px; padding:5px 6px; border:1.5px solid #B9CBD0; border-radius:6px; font-variant-numeric: tabular-nums; }
+  #btn-raz { background:var(--jaune); border:none; border-radius:8px; padding:8px 12px; font-weight:700; color:#3A2A08; width:100%; }
+  .totaux { background:#EFF6F8; border:1px solid #C9DDE2; border-radius:10px; padding:10px 12px; }
+  .totaux .ligne { display:flex; justify-content:space-between; font-size:.95rem; padding:3px 0; }
+  .totaux .ligne b { font-variant-numeric: tabular-nums; color:var(--petrole); }
+  .legende-item { display:flex; align-items:center; gap:8px; font-size:.9rem; padding:2px 0; }
+  .pastille { width:18px; height:14px; border-radius:3px; border:1px solid rgba(0,0,0,.35); flex:0 0 auto; }
+  .note-source { font-size:.82rem; line-height:1.5; color:#47606A; background:#FAF7EF; border:1px solid #E6DCC2; border-radius:10px; padding:10px 12px; }
+  @media (max-width: 820px) {
+    .disposition { flex-direction:column; }
+    #carte { height:52vh; min-height:320px; flex:none; }
+    .panneau { flex:none; max-width:none; width:100%; height:auto; overflow:visible; border-left:none; border-top:1px solid #D8DEE0; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ================= Verrou ================= -->
+<section id="verrou">
+  <div class="carte-verrou">
+    <h1>🔥 Feux de forêt</h1>
+    <p class="sous-titre">Terres privées · Saguenay–Lac-Saint-Jean<br>Feux cartographiés de 1994 à aujourd'hui</p>
+    <form id="form-code">
+      <label for="champ-code">Code d'accès</label>
+      <input type="text" id="champ-code" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Entre ton code">
+      <button type="submit" id="bouton-deverrouiller">Déverrouiller</button>
+    </form>
+    <p id="err-code"></p>
+    <p id="msg-verrou"></p>
+    <p class="avertissement">⚠️ Une fois déverrouillé, l'accès est retenu sur <b>CET appareil seulement</b>. N'entrez votre code que sur vos appareils personnels.</p>
+  </div>
+</section>
+
+<!-- ================= Application ================= -->
+<div id="app">
+  <div class="barre">
+    <h1>🔥 Feux de forêt — terres privées</h1>
+    <span class="badge">SAGUENAY–LAC-SAINT-JEAN</span>
+    <button id="btn-verrouiller" type="button">🔒 Verrouiller cet appareil</button>
+  </div>
+  <div class="disposition">
+    <div id="carte"></div>
+    <aside class="panneau">
+      <section>
+        <h2>Fiche du feu</h2>
+        <div id="fiche"><p class="fiche-vide">👆 Zoome sur un secteur, puis touche un feu coloré : tu verras son année, sa superficie sur les terres privées et les peuplements brûlés.</p></div>
+      </section>
+      <section>
+        <h2>Filtres</h2>
+        <div class="filtre">
+          <label>Année la plus ancienne <output id="out-an-min"></output></label>
+          <div class="rangee"><input type="range" id="an-min"></div>
+        </div>
+        <div class="filtre">
+          <label>Année la plus récente <output id="out-an-max"></output></label>
+          <div class="rangee"><input type="range" id="an-max"></div>
+        </div>
+        <div class="filtre">
+          <label>Superficie min. sur terres privées (ha)</label>
+          <div class="rangee"><input type="range" id="sup-min" min="0" step="1"><input type="number" id="sup-min-num" min="0" step="1"></div>
+        </div>
+        <div class="filtre">
+          <label>Peuplements brûlés min. (ha)</label>
+          <div class="rangee"><input type="range" id="peup-min" min="0" step="1"><input type="number" id="peup-min-num" min="0" step="1"></div>
+        </div>
+        <button id="btn-raz" type="button">Réinitialiser les filtres</button>
+      </section>
+      <section>
+        <h2>Totaux — feux affichés</h2>
+        <div class="totaux">
+          <div class="ligne"><span>Nombre de feux</span><b id="tot-nb">—</b></div>
+          <div class="ligne"><span>Superficie sur terres privées</span><b id="tot-sup">—</b></div>
+          <div class="ligne"><span>Peuplements brûlés</span><b id="tot-peup">—</b></div>
+        </div>
+      </section>
+      <section>
+        <h2>Légende — par décennie</h2>
+        <div id="legende"></div>
+        <p class="fiche-vide" style="margin-top:6px">Seules les parties des feux situées sur les terres privées sont dessinées.</p>
+      </section>
+      <section>
+        <h2>Source et méthode</h2>
+        <p class="note-source">Données : MRNF, Feux de forêt et inventaire écoforestier (données ouvertes) — superficies calculées sur les terres privées seulement. Les petits feux éteints par les services municipaux peuvent ne pas figurer au registre.</p>
+      </section>
+    </aside>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+'use strict';
+const URL_VERROU = 'https://verrou-feux.fredwalt.workers.dev/deverrouiller';
+const CLE_STOCKAGE = 'feuxslsj.cle.v1';
+const $ = (id) => document.getElementById(id);
+const deb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+// ---------- Formatage français ----------
+function fmtNombre(x, decimales) {
+  const p = Number(x).toFixed(decimales).split('.');
+  p[0] = p[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return decimales ? p[0] + ',' + p[1] : p[0];
+}
+const fmtHa = (x) => fmtNombre(x, 1) + ' ha';
+const fmtDate = (iso) => {
+  if (!iso) return null;
+  const d = new Date(iso + 'T12:00:00');
+  return isNaN(d) ? iso : d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', year: 'numeric' });
+};
+
+// ---------- Couleurs par décennie ----------
+const DECENNIES = [
+  { min: 1994, max: 1999, couleur: '#F0B429', libelle: '1994 – 1999' },
+  { min: 2000, max: 2009, couleur: '#E07B39', libelle: '2000 – 2009' },
+  { min: 2010, max: 2019, couleur: '#C75146', libelle: '2010 – 2019' },
+  { min: 2020, max: 9999, couleur: '#8E2F38', libelle: '2020 – ' },
+];
+const couleurAnnee = (a) => (DECENNIES.find((d) => a >= d.min && a <= d.max) || DECENNIES[3]).couleur;
+
+// ---------- État ----------
+let donnees = null;          // FeatureCollection complète
+let carte = null, couche = null;
+let selectionId = null;
+const filtres = { anMin: 1994, anMax: 2025, supMin: 0, peupMin: 0 };
+let bornes = { anMin: 1994, anMax: 2025, supMax: 0, peupMax: 0 };
+
+// ---------- Déverrouillage ----------
+async function demanderCle(code) {
+  let rep;
+  try {
+    rep = await fetch(URL_VERROU, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+  } catch (e) { throw new Error('reseau'); }
+  if (rep.status === 401) throw new Error('code-incorrect');
+  if (rep.status === 429) throw new Error('trop-de-tentatives');
+  if (!rep.ok) throw new Error('serveur');
+  const d = await rep.json();
+  if (!d || !d.cle) throw new Error('serveur');
+  return d.cle;
+}
+
+async function ouvrirAvecCle(b64) {
+  const rep = await fetch('donnees/feux.geojson.enc', { cache: 'no-store' });
+  if (!rep.ok) throw new Error('donnees');
+  const buf = await rep.arrayBuffer();
+  const octets = new Uint8Array(buf);
+  const cle = await crypto.subtle.importKey('raw', deb64(b64), { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  const clair = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: octets.slice(0, 12) }, cle, octets.slice(12));
+  donnees = JSON.parse(new TextDecoder().decode(clair));
+  try { localStorage.setItem(CLE_STOCKAGE, b64); } catch (e) {}
+  demarrer();
+}
+
+function afficherErreur(msg) {
+  const e = $('err-code');
+  e.textContent = msg;
+  e.style.display = 'block';
+}
+
+$('form-code').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const code = $('champ-code').value.trim();
+  if (!code) return;
+  const bouton = $('bouton-deverrouiller');
+  bouton.disabled = true;
+  $('err-code').style.display = 'none';
+  $('msg-verrou').textContent = 'Vérification du code…';
+  try {
+    const cle = await demanderCle(code);
+    $('msg-verrou').textContent = 'Code accepté : chargement des feux…';
+    await ouvrirAvecCle(cle);
+  } catch (err) {
+    $('msg-verrou').textContent = '';
+    if (err.message === 'code-incorrect') afficherErreur('Code incorrect. Vérifie et réessaie.');
+    else if (err.message === 'trop-de-tentatives') afficherErreur('Trop de tentatives. Attends une minute et réessaie.');
+    else if (err.message === 'reseau') afficherErreur('Impossible de joindre le serveur de vérification. Vérifie ta connexion.');
+    else afficherErreur('Impossible de déverrouiller (problème de connexion ou données illisibles).');
+  } finally { bouton.disabled = false; }
+});
+
+$('btn-verrouiller').addEventListener('click', () => {
+  try { localStorage.removeItem(CLE_STOCKAGE); } catch (e) {}
+  location.reload();
+});
+
+// Déverrouillage automatique si une clé est retenue sur cet appareil.
+(async () => {
+  let stockee = null;
+  try { stockee = localStorage.getItem(CLE_STOCKAGE); } catch (e) {}
+  if (!stockee) return;
+  $('msg-verrou').textContent = 'Accès mémorisé sur cet appareil : déverrouillage…';
+  try {
+    await ouvrirAvecCle(stockee);
+  } catch (e) {
+    try { localStorage.removeItem(CLE_STOCKAGE); } catch (err) {}
+    $('msg-verrou').textContent = '';
+    afficherErreur('L\u2019accès mémorisé n\u2019est plus valide. Entre ton code pour continuer.');
+  }
+})();
+
+// ---------- Carte et affichage ----------
+function demarrer() {
+  $('verrou').style.display = 'none';
+  $('app').style.display = 'block';
+  if (carte) { appliquerFiltres(); return; }
+
+  const ans = donnees.features.map((f) => f.properties.annee);
+  bornes.anMin = Math.min(...ans); bornes.anMax = Math.max(...ans);
+  bornes.supMax = Math.ceil(Math.max(...donnees.features.map((f) => f.properties.sup_privee_ha)));
+  bornes.peupMax = Math.ceil(Math.max(...donnees.features.map((f) => f.properties.sup_peupl_ha)));
+  filtres.anMin = bornes.anMin; filtres.anMax = bornes.anMax;
+
+  carte = L.map('carte').setView([48.55, -72.4], 8);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 17, attribution: '© OpenStreetMap contributors',
+  }).addTo(carte);
+
+  // Légende
+  $('legende').innerHTML = DECENNIES.map((d) => {
+    const lib = d.max === 9999 ? d.libelle + bornes.anMax : d.libelle;
+    return `<div class="legende-item"><span class="pastille" style="background:${d.couleur}"></span>${lib}</div>`;
+  }).join('');
+
+  // Bornes des contrôles
+  const anMin = $('an-min'), anMax = $('an-max');
+  anMin.min = anMax.min = bornes.anMin; anMin.max = anMax.max = bornes.anMax;
+  anMin.step = anMax.step = 1; anMin.value = bornes.anMin; anMax.value = bornes.anMax;
+  const supMin = $('sup-min'), peupMin = $('peup-min');
+  supMin.max = bornes.supMax; peupMin.max = bornes.peupMax;
+  supMin.value = 0; peupMin.value = 0;
+  $('sup-min-num').max = bornes.supMax; $('peup-min-num').max = bornes.peupMax;
+  $('sup-min-num').value = 0; $('peup-min-num').value = 0;
+  majEtiqueAnnees();
+
+  anMin.addEventListener('input', () => { filtres.anMin = Math.min(+anMin.value, filtres.anMax); anMin.value = filtres.anMin; majEtiqueAnnees(); appliquerFiltres(); });
+  anMax.addEventListener('input', () => { filtres.anMax = Math.max(+anMax.value, filtres.anMin); anMax.value = filtres.anMax; majEtiqueAnnees(); appliquerFiltres(); });
+  supMin.addEventListener('input', () => { filtres.supMin = +supMin.value; $('sup-min-num').value = filtres.supMin; appliquerFiltres(); });
+  $('sup-min-num').addEventListener('change', () => { filtres.supMin = Math.max(0, +$('sup-min-num').value || 0); supMin.value = Math.min(filtres.supMin, bornes.supMax); appliquerFiltres(); });
+  peupMin.addEventListener('input', () => { filtres.peupMin = +peupMin.value; $('peup-min-num').value = filtres.peupMin; appliquerFiltres(); });
+  $('peup-min-num').addEventListener('change', () => { filtres.peupMin = Math.max(0, +$('peup-min-num').value || 0); peupMin.value = Math.min(filtres.peupMin, bornes.peupMax); appliquerFiltres(); });
+  $('btn-raz').addEventListener('click', () => {
+    filtres.anMin = bornes.anMin; filtres.anMax = bornes.anMax; filtres.supMin = 0; filtres.peupMin = 0;
+    anMin.value = bornes.anMin; anMax.value = bornes.anMax; supMin.value = 0; peupMin.value = 0;
+    $('sup-min-num').value = 0; $('peup-min-num').value = 0;
+    majEtiqueAnnees(); appliquerFiltres();
+  });
+
+  appliquerFiltres();
+}
+
+function majEtiqueAnnees() {
+  $('out-an-min').textContent = filtres.anMin;
+  $('out-an-max').textContent = filtres.anMax;
+}
+
+function passeFiltres(p) {
+  return p.annee >= filtres.anMin && p.annee <= filtres.anMax
+    && p.sup_privee_ha >= filtres.supMin && p.sup_peupl_ha >= filtres.peupMin;
+}
+
+function appliquerFiltres() {
+  const visibles = donnees.features.filter((f) => passeFiltres(f.properties));
+  if (couche) { carte.removeLayer(couche); couche = null; }
+  couche = L.geoJSON({ type: 'FeatureCollection', features: visibles }, {
+    style: (f) => ({
+      color: f.properties.id === selectionId ? '#0A5C6E' : '#5B3413',
+      weight: f.properties.id === selectionId ? 3 : 1,
+      fillColor: couleurAnnee(f.properties.annee), fillOpacity: 0.62,
+    }),
+    onEachFeature: (f, calque) => calque.on('click', () => { selectionId = f.properties.id; afficherFiche(f.properties); appliquerStylesSelection(); }),
+  }).addTo(carte);
+  const totSup = visibles.reduce((s, f) => s + f.properties.sup_privee_ha, 0);
+  const totPeup = visibles.reduce((s, f) => s + f.properties.sup_peupl_ha, 0);
+  $('tot-nb').textContent = fmtNombre(visibles.length, 0);
+  $('tot-sup').textContent = fmtHa(totSup);
+  $('tot-peup').textContent = fmtHa(totPeup);
+  if (selectionId && !visibles.some((f) => f.properties.id === selectionId)) {
+    selectionId = null;
+    $('fiche').innerHTML = '<p class="fiche-vide">👆 Zoome sur un secteur, puis touche un feu coloré : tu verras son année, sa superficie sur les terres privées et les peuplements brûlés.</p>';
+  }
+}
+
+function appliquerStylesSelection() {
+  if (!couche) return;
+  couche.eachLayer((calque) => {
+    const id = calque.feature.properties.id;
+    calque.setStyle(id === selectionId
+      ? { color: '#0A5C6E', weight: 3 }
+      : { color: '#5B3413', weight: 1 });
+    if (id === selectionId) calque.bringToFront();
+  });
+}
+
+function afficherFiche(p) {
+  const lignes = [
+    ['Année', p.annee],
+    ['Brûlis', p.type === 'Mixte' ? 'Total et partiel' : (p.type === 'Total' ? 'Total' : 'Partiel')],
+    ['Superficie sur terres privées', fmtHa(p.sup_privee_ha)],
+    ['Peuplements brûlés', fmtHa(p.sup_peupl_ha)],
+    ['Cause', p.cause ? p.cause : 'Inconnue'],
+  ];
+  const date = fmtDate(p.date);
+  if (date) lignes.push(['Date de début', date]);
+  if (p.nofeu) lignes.push(['Feu SOPFEU nº', p.nofeu]);
+  $('fiche').innerHTML = `<div class="annee">Feu de ${p.annee}</div><dl>` +
+    lignes.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>';
+}
+</script>
+</body>
+</html>
