@@ -108,6 +108,10 @@
   .totaux .ligne b { font-variant-numeric: tabular-nums; color:var(--petrole); }
   .legende-item { display:flex; align-items:center; gap:8px; font-size:.9rem; padding:2px 0; }
   .pastille { width:18px; height:14px; border-radius:3px; border:1px solid rgba(0,0,0,.35); flex:0 0 auto; }
+  .pastille-point { width:14px; height:14px; border-radius:50%; background:#E07B39; border:2px solid #fff; box-shadow:0 0 0 1.5px rgba(0,0,0,.4); flex:0 0 auto; margin:0 2px; }
+  .ligne-feu.point { border-style:dashed; }
+  #fiche .mention-contour { margin-top:10px; padding:9px 11px; border-radius:8px; background:#FDF3DF; border:1.5px solid var(--jaune); font-weight:700; font-size:.93rem; }
+  .compil-table tr.ligne-point td { font-style:italic; }
   .note-source { font-size:.82rem; line-height:1.5; color:#47606A; background:#FAF7EF; border:1px solid #E6DCC2; border-radius:10px; padding:10px 12px; }
   @media (max-width: 820px) {
     .disposition { flex-direction:column; }
@@ -146,7 +150,7 @@
     <aside class="panneau">
       <section>
         <h2>Fiche du feu</h2>
-        <div id="fiche"><p class="fiche-vide">👆 Zoome sur un secteur, puis touche un feu coloré : tu verras son année, sa superficie sur les terres privées et les peuplements brûlés.</p></div>
+        <div id="fiche"><p class="fiche-vide">👆 Zoome sur un secteur, puis touche un feu coloré ou un point rond 📍 : tu verras son année, ses superficies — ou, pour un feu sans contour, sa fiche SOPFEU.</p></div>
       </section>
       <section>
         <h2>Filtres</h2>
@@ -170,15 +174,18 @@
       <section id="bloc-liste">
         <h2 id="titre-liste">Liste des feux</h2>
         <div id="liste-feux"></div>
-        <p class="fiche-vide" style="margin-top:6px">Touche un feu de la liste : la carte le cadre, le met en évidence et ouvre sa fiche.</p>
+        <p class="fiche-vide" style="margin-top:6px">Touche un feu de la liste : la carte le cadre (ou se centre sur son point 📍), le met en évidence et ouvre sa fiche.</p>
       </section>
       <section>
         <h2>Totaux — feux affichés</h2>
         <div class="totaux">
           <div class="ligne"><span>Nombre de feux</span><b id="tot-nb">—</b></div>
+          <div class="ligne"><span>dont avec contour</span><b id="tot-contour">—</b></div>
           <div class="ligne"><span>Superficie sur terres privées</span><b id="tot-sup">—</b></div>
           <div class="ligne"><span>Peuplements brûlés</span><b id="tot-peup">—</b></div>
+          <div class="ligne"><span>Feux sans contour</span><b id="tot-points">—</b></div>
         </div>
+        <p class="fiche-vide" style="margin-top:6px">Les superficies sur terres privées et les peuplements ne comptent que les feux avec contour. Pour les feux sans contour (📍), seule la superficie déclarée du feu entier est connue.</p>
       </section>
       <section>
         <h2>Compilation imprimable</h2>
@@ -189,11 +196,12 @@
         <h2>Légende — par décennie</h2>
         <div class="legende-item"><span class="pastille" style="background:rgba(46,134,214,.4);border:1.5px solid #0B5394"></span>Terres privées (calque bleu)</div>
         <div id="legende"></div>
-        <p class="fiche-vide" style="margin-top:6px">Seules les parties des feux situées sur les terres privées sont dessinées.</p>
+        <div class="legende-item"><span class="pastille-point"></span>📍 Feu sans contour (point d'origine SOPFEU)</div>
+        <p class="fiche-vide" style="margin-top:6px">Seules les parties des feux situées sur les terres privées sont dessinées. Les feux sans contour sont montrés par leur point d'origine.</p>
       </section>
       <section>
         <h2>Source et méthode</h2>
-        <p class="note-source">Données : MRNF, Feux de forêt et inventaire écoforestier (données ouvertes) — superficies calculées sur les terres privées seulement. Les petits feux éteints par les services municipaux peuvent ne pas figurer au registre.</p>
+        <p class="note-source">Données : MRNF, Feux de forêt et inventaire écoforestier (données ouvertes) — superficies calculées sur les terres privées seulement. Les feux sans contour (📍) sont les feux déclarés à la SOPFEU dont le point d'origine est situé sur les terres privées et pour lesquels aucun périmètre n'a été cartographié ; leur superficie déclarée couvre le feu entier, toutes tenures. Les petits feux éteints par les services municipaux peuvent ne pas figurer au registre.</p>
       </section>
     </aside>
   </div>
@@ -262,9 +270,10 @@ const DECENNIES = [
 const couleurAnnee = (a) => (DECENNIES.find((d) => a >= d.min && a <= d.max) || DECENNIES[3]).couleur;
 
 // ---------- État ----------
-let donnees = null;          // FeatureCollection complète (les feux)
+let donnees = null;          // FeatureCollection complète (les feux AVEC contour)
+let pointsDonnees = null;    // FeatureCollection des feux SANS contour (points SOPFEU)
 let territoire = null;       // FeatureCollection du calque « Terres privées »
-let carte = null, couche = null, coucheEvidence = null, coucheTerritoire = null;
+let carte = null, couche = null, couchePoints = null, coucheEvidence = null, coucheTerritoire = null;
 let fondActuel = 'plan';     // 'plan' (OSM) ou 'satellite' (Esri)
 let selectionId = null;
 const filtres = { supMin: 0, peupMin: 0 };
@@ -311,6 +320,18 @@ async function ouvrirAvecCle(b64) {
       territoire = JSON.parse(new TextDecoder().decode(clairT));
     }
   } catch (e) { territoire = null; }
+  // Feux SANS contour : fichier compagnon chiffré avec la MÊME clé
+  // (points d'origine SOPFEU situés sur les terres privées, sans
+  // périmètre cartographié). Un échec ne bloque pas l'outil.
+  pointsDonnees = null;
+  try {
+    const repP = await fetch('donnees/points.geojson.enc', { cache: 'no-store' });
+    if (repP.ok) {
+      const octetsP = new Uint8Array(await repP.arrayBuffer());
+      const clairP = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: octetsP.slice(0, 12) }, cle, octetsP.slice(12));
+      pointsDonnees = JSON.parse(new TextDecoder().decode(clairP));
+    }
+  } catch (e) { pointsDonnees = null; }
   try { localStorage.setItem(CLE_STOCKAGE, b64); } catch (e) {}
   demarrer();
 }
@@ -413,9 +434,11 @@ function demarrer() {
     return `<div class="legende-item"><span class="pastille" style="background:${d.couleur}"></span>${lib}</div>`;
   }).join('');
 
-  // Grille des années cliquables (une par année des données, dans l'ordre)
+  // Grille des années cliquables (une par année des données, dans l'ordre).
+  // Les comptes sont ceux de l'UNION : feux avec contour + feux points.
   const comptesAnnees = {};
   donnees.features.forEach((f) => { comptesAnnees[f.properties.annee] = (comptesAnnees[f.properties.annee] || 0) + 1; });
+  if (pointsDonnees) pointsDonnees.features.forEach((f) => { comptesAnnees[f.properties.annee] = (comptesAnnees[f.properties.annee] || 0) + 1; });
   const grille = $('grille-annees');
   grille.innerHTML = '';
   for (let a = bornes.anMin; a <= bornes.anMax; a++) {
@@ -453,7 +476,7 @@ function demarrer() {
   // Liste des feux : un seul écouteur, par délégation sur les lignes.
   $('liste-feux').addEventListener('click', (ev) => {
     const b = ev.target.closest('.ligne-feu');
-    if (b) choisirFeu(b.dataset.id, true);
+    if (b) choisirElement(b.dataset.id, true);
   });
 
   appliquerFiltres();
@@ -502,6 +525,26 @@ function passeFiltres(p) {
     && p.sup_privee_ha >= filtres.supMin && p.sup_peupl_ha >= filtres.peupMin;
 }
 
+// Filtres pour un feu POINT (sans contour) — règles distinctes, assumées :
+// la superficie minimale se juge sur la superficie DÉCLARÉE (feu entier),
+// et le minimum de peuplements ne peut pas s'appliquer (peuplements
+// inconnus) : le feu point ne passe que si ce seuil est à 0.
+function passeFiltresPoint(p) {
+  return anneesChoisies.has(p.annee)
+    && (p.sup_declaree_ha || 0) >= filtres.supMin && filtres.peupMin === 0;
+}
+
+// Retrouve un élément (événement ou feu point) par son identifiant.
+function trouverElement(id) {
+  const ev = donnees.features.find((x) => x.properties.id === id);
+  if (ev) return { type: 'evenement', feature: ev };
+  if (pointsDonnees) {
+    const pt = pointsDonnees.features.find((x) => x.properties.id === id);
+    if (pt) return { type: 'point', feature: pt };
+  }
+  return null;
+}
+
 function appliquerFiltres() {
   const visibles = donnees.features.filter((f) => passeFiltres(f.properties));
   if (couche) { carte.removeLayer(couche); couche = null; }
@@ -511,35 +554,67 @@ function appliquerFiltres() {
       weight: f.properties.id === selectionId ? 3 : 1,
       fillColor: couleurAnnee(f.properties.annee), fillOpacity: 0.62,
     }),
-    onEachFeature: (f, calque) => calque.on('click', () => choisirFeu(f.properties.id, false)),
+    onEachFeature: (f, calque) => calque.on('click', () => choisirElement(f.properties.id, false)),
   }).addTo(carte);
+  // Feux points : petits marqueurs ronds dans la couleur de l'année.
+  const pointsVisibles = pointsDonnees ? pointsDonnees.features.filter((f) => passeFiltresPoint(f.properties)) : [];
+  if (couchePoints) { carte.removeLayer(couchePoints); couchePoints = null; }
+  couchePoints = L.layerGroup(pointsVisibles.map((f) => {
+    const p = f.properties;
+    const m = L.circleMarker([f.geometry.coordinates[1], f.geometry.coordinates[0]], {
+      radius: 6.5, color: '#FFFFFF', weight: 1.6,
+      fillColor: couleurAnnee(p.annee), fillOpacity: 0.95,
+    });
+    m.on('click', () => choisirElement(p.id, false));
+    return m;
+  })).addTo(carte);
+  // Totaux : le nombre de feux est l'UNION ; les superficies privées et
+  // les peuplements ne comptent que les feux AVEC contour ; les feux
+  // sans contour ont leur ligne propre (superficies déclarées).
   const totSup = visibles.reduce((s, f) => s + f.properties.sup_privee_ha, 0);
   const totPeup = visibles.reduce((s, f) => s + f.properties.sup_peupl_ha, 0);
-  $('tot-nb').textContent = fmtNombre(visibles.length, 0);
+  const totDecl = pointsVisibles.reduce((s, f) => s + (f.properties.sup_declaree_ha || 0), 0);
+  $('tot-nb').textContent = fmtNombre(visibles.length + pointsVisibles.length, 0);
+  $('tot-contour').textContent = fmtNombre(visibles.length, 0);
   $('tot-sup').textContent = fmtHa(totSup);
   $('tot-peup').textContent = fmtHa(totPeup);
-  if (selectionId && !visibles.some((f) => f.properties.id === selectionId)) {
-    selectionId = null;
-    $('fiche').innerHTML = '<p class="fiche-vide">👆 Zoome sur un secteur, puis touche un feu coloré : tu verras son année, sa superficie sur les terres privées et les peuplements brûlés.</p>';
+  $('tot-points').textContent = fmtNombre(pointsVisibles.length, 0) + ' · ' + fmtHa(totDecl) + ' déclarés';
+  if (selectionId) {
+    const el = trouverElement(selectionId);
+    const encoreVisible = el && (el.type === 'evenement'
+      ? visibles.some((f) => f.properties.id === selectionId)
+      : pointsVisibles.some((f) => f.properties.id === selectionId));
+    if (!encoreVisible) {
+      selectionId = null;
+      $('fiche').innerHTML = '<p class="fiche-vide">👆 Zoome sur un secteur, puis touche un feu coloré ou un point rond 📍 : tu verras son année, ses superficies — ou, pour un feu sans contour, sa fiche SOPFEU.</p>';
+    }
   }
-  majListe(visibles);
+  majListe(visibles, pointsVisibles);
   majEvidence();
 }
 
 // ---------- Liste des feux de la sélection ----------
 // Visible seulement quand au moins une année est allumée ; le contenu est
-// l'ensemble ACTUELLEMENT FILTRÉ (tous les filtres), trié comme la
-// compilation : année croissante, puis superficie privée décroissante.
-function majListe(visibles) {
+// l'ensemble ACTUELLEMENT FILTRÉ (tous les filtres) — événements ET feux
+// points fusionnés — trié comme la compilation : année croissante, puis
+// superficie décroissante (pour les points : la superficie déclarée).
+function majListe(visibles, pointsVisibles) {
   const bloc = $('bloc-liste');
   if (anneesChoisies.size === 0) { bloc.style.display = 'none'; return; }
-  const tries = [...visibles].sort((a, b) => (a.properties.annee - b.properties.annee)
-    || (b.properties.sup_privee_ha - a.properties.sup_privee_ha));
-  $('titre-liste').textContent = 'Liste des feux (' + fmtNombre(tries.length, 0) + ')';
+  const items = [
+    ...visibles.map((f) => ({ type: 'evenement', p: f.properties, supTri: f.properties.sup_privee_ha })),
+    ...(pointsVisibles || []).map((f) => ({ type: 'point', p: f.properties, supTri: f.properties.sup_declaree_ha || 0 })),
+  ].sort((a, b) => (a.p.annee - b.p.annee) || (b.supTri - a.supTri));
+  $('titre-liste').textContent = 'Liste des feux (' + fmtNombre(items.length, 0) + ')';
   const cont = $('liste-feux');
-  cont.innerHTML = tries.length ? tries.map((f) => {
-    const p = f.properties;
+  cont.innerHTML = items.length ? items.map((it) => {
+    const p = it.p;
     const titre = p.nofeu ? 'Feu nº ' + p.nofeu : 'Nº de feu —';
+    if (it.type === 'point') {
+      return '<button type="button" class="ligne-feu point' + (p.id === selectionId ? ' choisi' : '') + '" data-id="' + p.id + '">'
+        + '<span class="l1">' + p.annee + ' · ' + titre + ' 📍</span>'
+        + '<span class="l2">Point — superficie déclarée : ' + fmtNombre(p.sup_declaree_ha || 0, 1) + ' ha (feu entier) · aucun contour</span></button>';
+    }
     return '<button type="button" class="ligne-feu' + (p.id === selectionId ? ' choisi' : '') + '" data-id="' + p.id + '">'
       + '<span class="l1">' + p.annee + ' · ' + titre + '</span>'
       + '<span class="l2">Privé : ' + fmtNombre(p.sup_privee_ha, 1) + ' ha · Peuplements : ' + fmtNombre(p.sup_peupl_ha, 1) + ' ha</span></button>';
@@ -556,36 +631,57 @@ function majMarqueListe() {
 
 // ---------- Choix d'un feu et mise en évidence ----------
 // Chemin unique pour le clic sur la carte (aller=false) et le clic sur une
-// ligne de la liste (aller=true : la carte cadre le feu, et sur mobile la
-// page défile jusqu'à la carte pour qu'il soit visible sans manipulation).
-function choisirFeu(id, aller) {
-  const f = donnees.features.find((x) => x.properties.id === id);
-  if (!f) return;
+// ligne de la liste (aller=true : la carte cadre le feu — fitBounds pour
+// un contour, centrage zoom 14 pour un point — et sur mobile la page
+// défile jusqu'à la carte pour qu'il soit visible sans manipulation).
+function choisirElement(id, aller) {
+  const el = trouverElement(id);
+  if (!el) return;
   selectionId = id;
-  afficherFiche(f.properties);
-  appliquerStylesSelection();
+  if (el.type === 'point') {
+    afficherFichePoint(el.feature.properties);
+  } else {
+    afficherFiche(el.feature.properties);
+    appliquerStylesSelection();
+  }
   majEvidence();
   majMarqueListe();
   if (aller) {
-    carte.fitBounds(L.geoJSON(f).getBounds(), { padding: [28, 28], maxZoom: 14 });
+    if (el.type === 'point') {
+      carte.setView([el.feature.geometry.coordinates[1], el.feature.geometry.coordinates[0]], 14);
+    } else {
+      carte.fitBounds(L.geoJSON(el.feature).getBounds(), { padding: [28, 28], maxZoom: 14 });
+    }
     if (window.matchMedia('(max-width: 820px)').matches) {
       document.getElementById('carte').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }
 }
 
-// Évidence du feu choisi : contour épais blanc doublé de jaune, par-dessus
-// la couche des feux. Elle persiste jusqu'à un autre choix ; si un
-// changement de filtres fait sortir le feu de l'ensemble affiché,
-// appliquerFiltres réinitialise la sélection et l'évidence est retirée ici.
+// Évidence de l'élément choisi : contour épais blanc doublé de jaune pour
+// un polygone ; anneaux blanc et jaune autour du marqueur pour un point.
+// Elle persiste jusqu'à un autre choix ; si un changement de filtres fait
+// sortir l'élément de l'ensemble affiché, appliquerFiltres réinitialise
+// la sélection et l'évidence est retirée ici.
 function majEvidence() {
   if (coucheEvidence) { carte.removeLayer(coucheEvidence); coucheEvidence = null; }
   if (!selectionId) return;
-  const f = donnees.features.find((x) => x.properties.id === selectionId);
-  if (!f || !passeFiltres(f.properties)) return;
+  const el = trouverElement(selectionId);
+  if (!el) return;
+  if (el.type === 'point') {
+    if (!passeFiltresPoint(el.feature.properties)) return;
+    const ll = [el.feature.geometry.coordinates[1], el.feature.geometry.coordinates[0]];
+    coucheEvidence = L.layerGroup([
+      L.circleMarker(ll, { radius: 13, color: '#FFFFFF', weight: 7, opacity: 1, fillOpacity: 0 }),
+      L.circleMarker(ll, { radius: 13, color: '#E8A33D', weight: 3.5, opacity: 1, fillOpacity: 0 }),
+    ]).addTo(carte);
+    coucheEvidence.eachLayer((l) => l.bringToFront());
+    return;
+  }
+  if (!passeFiltres(el.feature.properties)) return;
   coucheEvidence = L.layerGroup([
-    L.geoJSON(f, { style: { color: '#FFFFFF', weight: 9, opacity: 1, fillOpacity: 0 } }),
-    L.geoJSON(f, { style: { color: '#E8A33D', weight: 5, opacity: 1, fillOpacity: 0 } }),
+    L.geoJSON(el.feature, { style: { color: '#FFFFFF', weight: 9, opacity: 1, fillOpacity: 0 } }),
+    L.geoJSON(el.feature, { style: { color: '#E8A33D', weight: 5, opacity: 1, fillOpacity: 0 } }),
   ]).addTo(carte);
   coucheEvidence.eachLayer((l) => l.bringToFront());
 }
@@ -608,10 +704,14 @@ function appliquerStylesSelection() {
 // affichées « — », jamais inventées.
 function ouvrirCompilation() {
   if (!donnees) return;
-  const liste = donnees.features
-    .filter((f) => passeFiltres(f.properties))
-    .sort((a, b) => (a.properties.annee - b.properties.annee)
-      || (b.properties.sup_privee_ha - a.properties.sup_privee_ha));
+  const evs = donnees.features.filter((f) => passeFiltres(f.properties));
+  const pts = pointsDonnees ? pointsDonnees.features.filter((f) => passeFiltresPoint(f.properties)) : [];
+  // Liste fusionnée, triée comme la liste du panneau : année croissante,
+  // puis superficie décroissante (déclarée pour les feux points).
+  const liste = [
+    ...evs.map((f) => ({ type: 'evenement', p: f.properties, supTri: f.properties.sup_privee_ha })),
+    ...pts.map((f) => ({ type: 'point', p: f.properties, supTri: f.properties.sup_declaree_ha || 0 })),
+  ].sort((a, b) => (a.p.annee - b.p.annee) || (b.supTri - a.supTri));
   const maintenant = new Date();
   $('compil-production').textContent = 'Compilation produite le '
     + maintenant.toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', year: 'numeric' })
@@ -619,12 +719,22 @@ function ouvrirCompilation() {
   $('compil-criteres').innerHTML = '<b>Critères appliqués</b> — Années : ' + libelleAnnees()
     + ' · Superficie min. sur terres privées : ' + fmtNombre(filtres.supMin, 0) + ' ha'
     + ' · Peuplements brûlés min. : ' + fmtNombre(filtres.peupMin, 0) + ' ha'
-    + ' · Feux retenus : <b>' + fmtNombre(liste.length, 0) + '</b>';
+    + ' · Feux retenus : <b>' + fmtNombre(liste.length, 0) + '</b>'
+    + ' (' + fmtNombre(evs.length, 0) + ' avec contour · ' + fmtNombre(pts.length, 0) + ' sans contour)';
   const tiret = '<td>—</td>';
   if (liste.length) {
-    $('compil-corps').innerHTML = liste.map((f) => {
-      const p = f.properties;
+    $('compil-corps').innerHTML = liste.map((it) => {
+      const p = it.p;
       const dDeb = fmtDate(p.date), dFin = fmtDate(p.date_fin);
+      if (it.type === 'point') {
+        return '<tr class="ligne-point"><td>' + p.annee + '</td>'
+          + (p.nofeu != null ? '<td>' + p.nofeu + ' 📍</td>' : tiret)
+          + (dDeb ? '<td>' + dDeb + '</td>' : tiret)
+          + (dFin ? '<td>' + dFin + '</td>' : tiret)
+          + (p.cause ? '<td>' + p.cause + '</td>' : tiret)
+          + '<td class="num">' + (p.sup_declaree_ha != null ? fmtNombre(p.sup_declaree_ha, 1) : '—') + '</td>'
+          + tiret + '</tr>';
+      }
       return '<tr><td>' + p.annee + '</td>'
         + (p.nofeu ? '<td>' + p.nofeu + '</td>' : tiret)
         + (dDeb ? '<td>' + dDeb + '</td>' : tiret)
@@ -636,19 +746,26 @@ function ouvrirCompilation() {
   } else {
     $('compil-corps').innerHTML = '<tr><td colspan="7">Aucun feu ne correspond aux critères choisis.</td></tr>';
   }
-  const totSup = liste.reduce((s, f) => s + f.properties.sup_privee_ha, 0);
-  const totPeup = liste.reduce((s, f) => s + f.properties.sup_peupl_ha, 0);
-  $('compil-pied').innerHTML = '<tr><td colspan="5">Totaux — ' + fmtNombre(liste.length, 0) + (liste.length === 1 ? ' feu' : ' feux') + '</td>'
+  // La ligne « Totaux » conserve son sens : feux AVEC contour seulement.
+  // Les feux sans contour ont leur propre ligne (superficies déclarées).
+  const totSup = evs.reduce((s, f) => s + f.properties.sup_privee_ha, 0);
+  const totPeup = evs.reduce((s, f) => s + f.properties.sup_peupl_ha, 0);
+  const totDecl = pts.reduce((s, f) => s + (f.properties.sup_declaree_ha || 0), 0);
+  $('compil-pied').innerHTML = '<tr><td colspan="5">Totaux — ' + fmtNombre(evs.length, 0) + (evs.length === 1 ? ' feu' : ' feux') + ' avec contour</td>'
     + '<td class="num">' + fmtNombre(totSup, 1) + '</td>'
-    + '<td class="num">' + fmtNombre(totPeup, 1) + '</td></tr>';
-  const nb = liste.length;
-  const compte = (champ) => liste.filter((f) => f.properties[champ]).length;
+    + '<td class="num">' + fmtNombre(totPeup, 1) + '</td></tr>'
+    + '<tr><td colspan="7">Feux sans contour : ' + fmtNombre(pts.length, 0) + (pts.length === 1 ? ' feu' : ' feux')
+    + ' · superficies déclarées ' + fmtNombre(totDecl, 1) + ' ha (feu entier, toutes tenures)</td></tr>';
+  const nbEv = evs.length;
+  const compte = (champ) => evs.filter((f) => f.properties[champ]).length;
   $('compil-note').textContent = 'Nº de feu, dates et source d\u2019ignition proviennent du registre des points d\u2019origine de la SOPFEU (données ouvertes du MRNF), '
     + 'rattachés au feu quand un point d\u2019origine est contenu dans son périmètre. Dans la présente liste : '
-    + 'nº de feu connu pour ' + compte('nofeu') + ' des ' + nb + ' feux ; '
-    + 'date de début connue pour ' + compte('date') + ' des ' + nb + ' ; '
-    + 'date de fin (extinction) connue pour ' + compte('date_fin') + ' des ' + nb + ' ; '
-    + 'source d\u2019ignition connue pour ' + compte('cause') + ' des ' + nb + '. '
+    + 'nº de feu connu pour ' + compte('nofeu') + ' des ' + nbEv + ' feux avec contour ; '
+    + 'date de début connue pour ' + compte('date') + ' des ' + nbEv + ' ; '
+    + 'date de fin (extinction) connue pour ' + compte('date_fin') + ' des ' + nbEv + ' ; '
+    + 'source d\u2019ignition connue pour ' + compte('cause') + ' des ' + nbEv + '. '
+    + 'Les lignes marquées 📍 sont des feux sans contour fourni par la SOPFEU : leur point d\u2019origine est situé sur les terres privées ; '
+    + 'la superficie indiquée est la superficie déclarée du feu entier (toutes tenures), qui n\u2019entre ni dans les totaux des superficies sur terres privées, ni dans ceux des peuplements brûlés. '
     + 'Les valeurs inconnues sont affichées « — ». Superficies calculées sur les terres privées seulement (la partie publique de chaque feu est exclue).';
   $('app').style.display = 'none';
   $('compilation').style.display = 'block';
@@ -681,6 +798,27 @@ function afficherFiche(p) {
   if (p.nofeu) lignes.push(['Feu SOPFEU nº', p.nofeu]);
   $('fiche').innerHTML = `<div class="annee">Feu de ${p.annee}</div><dl>` +
     lignes.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>';
+}
+
+// Fiche d'un feu POINT (sans contour) : les seules données connues sont
+// celles du registre des points d'origine SOPFEU. La superficie est la
+// superficie DÉCLARÉE du feu entier (toutes tenures), jamais une
+// superficie privée — et la mention d'absence de contour est affichée
+// telle quelle, en évidence.
+function afficherFichePoint(p) {
+  const lignes = [
+    ['Année', p.annee],
+    ['Feu SOPFEU nº', p.nofeu != null ? p.nofeu : '—'],
+    ['Cause', p.cause ? p.cause : 'Inconnue'],
+  ];
+  const date = fmtDate(p.date);
+  if (date) lignes.push(['Date de début', date]);
+  const dateFin = fmtDate(p.date_fin);
+  if (dateFin) lignes.push(['Date de fin (extinction)', dateFin]);
+  lignes.push(['Superficie déclarée', (p.sup_declaree_ha != null ? fmtHa(p.sup_declaree_ha) : '—') + ' (feu entier)']);
+  $('fiche').innerHTML = `<div class="annee">Feu de ${p.annee} 📍</div><dl>` +
+    lignes.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>'
+    + '<p class="mention-contour">Aucun contour fourni par la SOPFEU</p>';
 }
 </script>
 </body>
