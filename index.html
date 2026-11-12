@@ -51,6 +51,40 @@
   .filtre input[type="range"] { flex:1 1 auto; min-width:0; accent-color:var(--petrole); }
   .filtre input[type="number"] { width:84px; padding:5px 6px; border:1.5px solid #B9CBD0; border-radius:6px; font-variant-numeric: tabular-nums; }
   #btn-raz { background:var(--jaune); border:none; border-radius:8px; padding:8px 12px; font-weight:700; color:#3A2A08; width:100%; }
+  #btn-compilation { background:var(--petrole); border:none; border-radius:8px; padding:9px 12px; font-weight:700; color:#fff; width:100%; }
+
+  /* ---------- Compilation imprimable ---------- */
+  #compilation { display:none; max-width:1020px; margin:0 auto; padding:22px 16px 40px; }
+  #compilation h1 { font-size:1.35rem; color:var(--petrole); margin:0 0 6px; }
+  #compilation .production { margin:0 0 2px; color:#47606A; font-size:.92rem; }
+  #compilation .criteres { margin:0 0 16px; font-size:.95rem; background:#EFF6F8; border:1px solid #C9DDE2; border-radius:10px; padding:10px 12px; line-height:1.5; }
+  .compil-actions { display:flex; gap:10px; flex-wrap:wrap; margin:0 0 18px; }
+  .compil-actions button { border-radius:8px; padding:10px 14px; font-weight:700; border:none; }
+  #btn-imprimer { background:var(--jaune); color:#3A2A08; }
+  #btn-retour-carte, #btn-retour-carte-bas { background:var(--petrole); color:#fff; }
+  .compil-table-conteneur { overflow-x:auto; }
+  .compil-table { width:100%; border-collapse:collapse; font-size:.92rem; background:#fff; }
+  .compil-table th, .compil-table td { border:1px solid #B9CBD0; padding:6px 8px; text-align:left; }
+  .compil-table thead th { background:var(--petrole); color:#fff; font-size:.86rem; }
+  .compil-table td.num, .compil-table th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .compil-table tbody tr:nth-child(even) { background:#F7F4EC; }
+  .compil-table tfoot td { font-weight:800; background:#EFF6F8; border-top:3px double var(--petrole); }
+  #compilation .note-source { margin-top:14px; }
+
+  /* ---------- Impression : seule la compilation ---------- */
+  @media print {
+    #verrou, #app { display:none !important; }
+    #compilation { display:block !important; max-width:none; margin:0; padding:0; }
+    #compilation .non-imprimable { display:none !important; }
+    body { background:#fff !important; }
+    #compilation h1 { color:#000; }
+    #compilation .criteres { background:#fff; border:1px solid #000; }
+    .compil-table thead th { background:#fff !important; color:#000; border:1px solid #000; }
+    .compil-table th, .compil-table td { border:1px solid #000; }
+    .compil-table tbody tr:nth-child(even) { background:#fff; }
+    .compil-table tfoot td { background:#fff; border-top:3px double #000; }
+    #compilation .note-source { background:#fff; border:1px solid #000; color:#000; }
+  }
   .totaux { background:#EFF6F8; border:1px solid #C9DDE2; border-radius:10px; padding:10px 12px; }
   .totaux .ligne { display:flex; justify-content:space-between; font-size:.95rem; padding:3px 0; }
   .totaux .ligne b { font-variant-numeric: tabular-nums; color:var(--petrole); }
@@ -125,6 +159,11 @@
         </div>
       </section>
       <section>
+        <h2>Compilation imprimable</h2>
+        <button id="btn-compilation" type="button">🖨️ Compilation imprimable</button>
+        <p class="fiche-vide" style="margin-top:6px">Un tableau des feux présentement filtrés — année, nº de feu, dates, source d'ignition, superficies — avec les totaux, prêt à imprimer ou à enregistrer en PDF.</p>
+      </section>
+      <section>
         <h2>Légende — par décennie</h2>
         <div id="legende"></div>
         <p class="fiche-vide" style="margin-top:6px">Seules les parties des feux situées sur les terres privées sont dessinées.</p>
@@ -136,6 +175,38 @@
     </aside>
   </div>
 </div>
+
+<!-- ================= Compilation imprimable ================= -->
+<section id="compilation">
+  <h1>Feux de forêt — terres privées du Saguenay–Lac-Saint-Jean</h1>
+  <p class="production" id="compil-production"></p>
+  <p class="criteres" id="compil-criteres"></p>
+  <div class="compil-actions non-imprimable">
+    <button id="btn-imprimer" type="button">🖨️ Imprimer / Enregistrer en PDF</button>
+    <button id="btn-retour-carte" type="button">← Retour à la carte</button>
+  </div>
+  <div class="compil-table-conteneur">
+    <table class="compil-table">
+      <thead>
+        <tr>
+          <th>Année</th>
+          <th>Nº de feu</th>
+          <th>Date de début</th>
+          <th>Date de fin</th>
+          <th>Source d'ignition</th>
+          <th class="num">Superficie sur terres privées (ha)</th>
+          <th class="num">Peuplements brûlés (ha)</th>
+        </tr>
+      </thead>
+      <tbody id="compil-corps"></tbody>
+      <tfoot id="compil-pied"></tfoot>
+    </table>
+  </div>
+  <p class="note-source" id="compil-note"></p>
+  <div class="compil-actions non-imprimable" style="margin-top:16px">
+    <button id="btn-retour-carte-bas" type="button">← Retour à la carte</button>
+  </div>
+</section>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -343,6 +414,71 @@ function appliquerStylesSelection() {
   });
 }
 
+// ---------- Compilation imprimable ----------
+// Construite depuis l'ensemble ACTUELLEMENT FILTRÉ de la carte (mêmes
+// prédicats que appliquerFiltres). Les valeurs absentes des données
+// (nº de feu, dates, cause sans point d'origine SOPFEU apparié) sont
+// affichées « — », jamais inventées.
+function ouvrirCompilation() {
+  if (!donnees) return;
+  const liste = donnees.features
+    .filter((f) => passeFiltres(f.properties))
+    .sort((a, b) => (a.properties.annee - b.properties.annee)
+      || (b.properties.sup_privee_ha - a.properties.sup_privee_ha));
+  const maintenant = new Date();
+  $('compil-production').textContent = 'Compilation produite le '
+    + maintenant.toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', year: 'numeric' })
+    + ' à ' + maintenant.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) + '.';
+  $('compil-criteres').innerHTML = '<b>Critères appliqués</b> — Années : de ' + filtres.anMin + ' à ' + filtres.anMax
+    + ' · Superficie min. sur terres privées : ' + fmtNombre(filtres.supMin, 0) + ' ha'
+    + ' · Peuplements brûlés min. : ' + fmtNombre(filtres.peupMin, 0) + ' ha'
+    + ' · Feux retenus : <b>' + fmtNombre(liste.length, 0) + '</b>';
+  const tiret = '<td>—</td>';
+  if (liste.length) {
+    $('compil-corps').innerHTML = liste.map((f) => {
+      const p = f.properties;
+      const dDeb = fmtDate(p.date), dFin = fmtDate(p.date_fin);
+      return '<tr><td>' + p.annee + '</td>'
+        + (p.nofeu ? '<td>' + p.nofeu + '</td>' : tiret)
+        + (dDeb ? '<td>' + dDeb + '</td>' : tiret)
+        + (dFin ? '<td>' + dFin + '</td>' : tiret)
+        + (p.cause ? '<td>' + p.cause + '</td>' : tiret)
+        + '<td class="num">' + fmtNombre(p.sup_privee_ha, 1) + '</td>'
+        + '<td class="num">' + fmtNombre(p.sup_peupl_ha, 1) + '</td></tr>';
+    }).join('');
+  } else {
+    $('compil-corps').innerHTML = '<tr><td colspan="7">Aucun feu ne correspond aux critères choisis.</td></tr>';
+  }
+  const totSup = liste.reduce((s, f) => s + f.properties.sup_privee_ha, 0);
+  const totPeup = liste.reduce((s, f) => s + f.properties.sup_peupl_ha, 0);
+  $('compil-pied').innerHTML = '<tr><td colspan="5">Totaux — ' + fmtNombre(liste.length, 0) + (liste.length === 1 ? ' feu' : ' feux') + '</td>'
+    + '<td class="num">' + fmtNombre(totSup, 1) + '</td>'
+    + '<td class="num">' + fmtNombre(totPeup, 1) + '</td></tr>';
+  const nb = liste.length;
+  const compte = (champ) => liste.filter((f) => f.properties[champ]).length;
+  $('compil-note').textContent = 'Nº de feu, dates et source d\u2019ignition proviennent du registre des points d\u2019origine de la SOPFEU (données ouvertes du MRNF), '
+    + 'rattachés au feu quand un point d\u2019origine est contenu dans son périmètre. Dans la présente liste : '
+    + 'nº de feu connu pour ' + compte('nofeu') + ' des ' + nb + ' feux ; '
+    + 'date de début connue pour ' + compte('date') + ' des ' + nb + ' ; '
+    + 'date de fin (extinction) connue pour ' + compte('date_fin') + ' des ' + nb + ' ; '
+    + 'source d\u2019ignition connue pour ' + compte('cause') + ' des ' + nb + '. '
+    + 'Les valeurs inconnues sont affichées « — ». Superficies calculées sur les terres privées seulement (la partie publique de chaque feu est exclue).';
+  $('app').style.display = 'none';
+  $('compilation').style.display = 'block';
+  window.scrollTo(0, 0);
+}
+
+function fermerCompilation() {
+  $('compilation').style.display = 'none';
+  $('app').style.display = 'block';
+  if (carte) carte.invalidateSize();
+}
+
+$('btn-compilation').addEventListener('click', ouvrirCompilation);
+$('btn-imprimer').addEventListener('click', () => window.print());
+$('btn-retour-carte').addEventListener('click', fermerCompilation);
+$('btn-retour-carte-bas').addEventListener('click', fermerCompilation);
+
 function afficherFiche(p) {
   const lignes = [
     ['Année', p.annee],
@@ -353,6 +489,8 @@ function afficherFiche(p) {
   ];
   const date = fmtDate(p.date);
   if (date) lignes.push(['Date de début', date]);
+  const dateFin = fmtDate(p.date_fin);
+  if (dateFin) lignes.push(['Date de fin (extinction)', dateFin]);
   if (p.nofeu) lignes.push(['Feu SOPFEU nº', p.nofeu]);
   $('fiche').innerHTML = `<div class="annee">Feu de ${p.annee}</div><dl>` +
     lignes.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>';
